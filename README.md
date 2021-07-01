@@ -1,4 +1,6 @@
 # Forthmobile
 The Forth-driven rover
 
-Hi Atle is Peter.
+ESP32forth +   
+
+with  Compass, TOF laser, GPS sensors.
