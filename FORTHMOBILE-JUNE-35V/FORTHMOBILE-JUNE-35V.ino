@@ -2,7 +2,7 @@
  * ESP32forth v7.0.5--Peterforth version 30June2021
  * Revision: 33cf8aaa6fe3e0bc4abf3e4cd5c496a3071b9171
  */
- 
+
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -44,6 +44,8 @@ typedef int64_t dcell_t;
   X("U/MOD", USMOD, w = *sp; *sp = (ucell_t) w % (ucell_t) tos; \
                     tos = (ucell_t) w / (ucell_t) tos) \
   X("*/MOD", SSMOD, SSMOD_FUNC) \
+  Y(LSHIFT, tos = (*sp-- << tos)) \
+  Y(RSHIFT, tos = (*sp-- >> tos)) \
   Y(AND, tos &= *sp--) \
   Y(OR, tos |= *sp--) \
   Y(XOR, tos ^= *sp--) \
@@ -89,7 +91,6 @@ typedef int64_t dcell_t;
   Y(EXIT, ip = (cell_t *) *rp--) \
   X(";", SEMICOLON, UNSMUDGE(); COMMA(g_sys.DOEXIT_XT); g_sys.state = 0) \
 
-
 #define SET tos = (cell_t)
 
 #define n0 tos
@@ -128,8 +129,6 @@ typedef int64_t dcell_t;
 #define c5 (*(char **) &n5)
 #define c6 (*(char **) &n6)
 
-
-
 // For now, default on several options.
 #define ENABLE_SPIFFS_SUPPORT
 #define ENABLE_WIFI_SUPPORT
@@ -139,13 +138,14 @@ typedef int64_t dcell_t;
 #define ENABLE_I2C_SUPPORT
 #define ENABLE_SOCKETS_SUPPORT
 #define ENABLE_FREERTOS_SUPPORT
+#define ENABLE_INTERRUPTS_SUPPORT
 
 // Uncomment this #define for OLED Support.
 // You will need to install these libraries from the Library Manager:
 //   Adafruit SSD1306
 //   Adafruit GFX Library
 //   Adafruit BusIO
-//#define ENABLE_OLED_SUPPORT
+ #define ENABLE_OLED_SUPPORT
 
 // For now assume only boards with PSRAM (ESP32-CAM)
 // will want SerialBluetooth (very large) and camera support.
@@ -177,10 +177,15 @@ typedef int64_t dcell_t;
 # define HEAP_SIZE 2 * 1024
 # define STACK_SIZE 32
 #endif
+#define INTERRUPT_STACK_CELLS 64
 
 #define PLATFORM_OPCODE_LIST \
   /* Memory Allocation */ \
-  Y(MALLOC, SET malloc(n0)) \
+  X("initcompass",setupcomp2, setupcomp()) \
+  X("readcompass",readcomp2, PUSH readcomp())  \
+  X("initlaser", setupe, setuplaser()) \
+  X("readlaser",sotape, PUSH readlaser())  \
+  Y(MALLOC, SET malloc(n0))  \
   Y(SYSFREE, free(a0); DROP) \
   Y(REALLOC, SET realloc(a1, n0); NIP) \
   Y(heap_caps_malloc, SET heap_caps_malloc(n1, n0); NIP) \
@@ -194,12 +199,19 @@ typedef int64_t dcell_t;
   X("Serial.readBytes", SERIAL_READ_BYTES, n0 = Serial.readBytes(b1, n0); NIP) \
   X("Serial.write", SERIAL_WRITE, n0 = Serial.write(b1, n0); NIP) \
   X("Serial.flush", SERIAL_FLUSH, Serial.flush()) \
+  X("Serial2.begin", SERIAL2_BEGIN, Serial2.begin(tos); DROP) \
+  X("Serial2.end", SERIAL2_END, Serial2.end()) \
+  X("Serial2.available", SERIAL2_AVAILABLE, PUSH Serial2.available()) \
+  X("Serial2.readBytes", SERIAL2_READ_BYTES, n0 = Serial2.readBytes(b1, n0); NIP) \
+  X("Serial2.write", SERIAL2_WRITE, n0 = Serial2.write(b1, n0); NIP) \
+  X("Serial2.flush", SERIAL2_FLUSH, Serial2.flush()) \
   /* Pins and PWM */ \
   Y(pinMode, pinMode(n1, n0); DROPn(2)) \
   Y(digitalWrite, digitalWrite(n1, n0); DROPn(2)) \
   Y(digitalRead, n0 = digitalRead(n0)) \
   Y(analogRead, n0 = analogRead(n0)) \
-  Y(pulsein, n0 = pulseIn(n0, HIGH)) \
+  Y(pulseIn, n0 = pulseIn(n2, n1, n0); NIPn(2)) \
+  Y(dacWrite, dacWrite(n1, n0); DROPn(2)) \
   Y(ledcSetup, \
       n0 = (cell_t) (1000000 * ledcSetup(n2, n1 / 1000.0, n0)); NIPn(2)) \
   Y(ledcAttachPin, ledcAttachPin(n1, n0); DROPn(2)) \
@@ -212,7 +224,8 @@ typedef int64_t dcell_t;
   Y(ledcWriteNote, \
       tos = (cell_t) (1000000 * ledcWriteNote(n2, (note_t) n1, n0)); NIPn(2)) \
   /* General System */ \
-  Y(MS, delay(n0); DROP) \
+  X("MS-TICKS", MS_TICKS, PUSH millis()) \
+  X("RAW-YIELD", RAW_YIELD, yield()) \
   Y(TERMINATE, exit(n0)) \
   /* File words */ \
   X("R/O", R_O, PUSH O_RDONLY) \
@@ -251,6 +264,7 @@ typedef int64_t dcell_t;
   OPTIONAL_CAMERA_SUPPORT \
   OPTIONAL_SOCKETS_SUPPORT \
   OPTIONAL_FREERTOS_SUPPORT \
+  OPTIONAL_INTERRUPTS_SUPPORT \
   OPTIONAL_OLED_SUPPORT \
 
 #ifndef ENABLE_SPIFFS_SUPPORT
@@ -277,6 +291,43 @@ typedef int64_t dcell_t;
   Y(vTaskDelete, vTaskDelete((TaskHandle_t) n0); DROP) \
   Y(xTaskCreatePinnedToCore, n0 = xTaskCreatePinnedToCore((TaskFunction_t) a6, c5, n4, a3, (UBaseType_t) n2, (TaskHandle_t *) a1, (BaseType_t) n0); NIPn(6)) \
   Y(xPortGetCoreID, PUSH xPortGetCoreID())
+#endif
+
+#ifndef ENABLE_INTERRUPTS_SUPPORT
+# define OPTIONAL_INTERRUPTS_SUPPORT
+#else
+# include "esp_intr_alloc.h"
+# include "driver/timer.h"
+# include "driver/gpio.h"
+# define OPTIONAL_INTERRUPTS_SUPPORT \
+  Y(gpio_config, n0 = gpio_config((const gpio_config_t *) a0)) \
+  Y(gpio_reset_pin, n0 = gpio_reset_pin((gpio_num_t) n0)) \
+  Y(gpio_set_intr_type, n0 = gpio_set_intr_type((gpio_num_t) n1, (gpio_int_type_t) n0); NIP) \
+  Y(gpio_intr_enable, n0 = gpio_intr_enable((gpio_num_t) n0)) \
+  Y(gpio_intr_disable, n0 = gpio_intr_disable((gpio_num_t) n0)) \
+  Y(gpio_set_level, n0 = gpio_set_level((gpio_num_t) n1, n0); NIP) \
+  Y(gpio_get_level, n0 = gpio_get_level((gpio_num_t) n0)) \
+  Y(gpio_set_direction, n0 = gpio_set_direction((gpio_num_t) n1, (gpio_mode_t) n0); NIP) \
+  Y(gpio_set_pull_mode, n0 = gpio_set_pull_mode((gpio_num_t) n1, (gpio_pull_mode_t) n0); NIP) \
+  Y(gpio_wakeup_enable, n0 = gpio_wakeup_enable((gpio_num_t) n1, (gpio_int_type_t) n0); NIP) \
+  Y(gpio_wakeup_disable, n0 = gpio_wakeup_disable((gpio_num_t) n0)) \
+  Y(gpio_pullup_en, n0 = gpio_pullup_en((gpio_num_t) n0)) \
+  Y(gpio_pullup_dis, n0 = gpio_pullup_dis((gpio_num_t) n0)) \
+  Y(gpio_pulldown_en, n0 = gpio_pulldown_en((gpio_num_t) n0)) \
+  Y(gpio_pulldown_dis, n0 = gpio_pulldown_dis((gpio_num_t) n0)) \
+  Y(gpio_hold_en, n0 = gpio_hold_en((gpio_num_t) n0)) \
+  Y(gpio_hold_dis, n0 = gpio_hold_dis((gpio_num_t) n0)) \
+  Y(gpio_deep_sleep_hold_en, gpio_deep_sleep_hold_en()) \
+  Y(gpio_deep_sleep_hold_dis, gpio_deep_sleep_hold_dis()) \
+  Y(gpio_install_isr_service, n0 = gpio_install_isr_service(n0)) \
+  Y(gpio_uninstall_isr_service, gpio_uninstall_isr_service()) \
+  Y(gpio_isr_handler_add, n0 = GpioIsrHandlerAdd(n2, n1, n0); NIPn(2)) \
+  Y(gpio_isr_handler_remove, n0 = gpio_isr_handler_remove((gpio_num_t) n0)) \
+  Y(gpio_set_drive_capability, n0 = gpio_set_drive_capability((gpio_num_t) n1, (gpio_drive_cap_t) n0); NIP) \
+  Y(gpio_get_drive_capability, n0 = gpio_get_drive_capability((gpio_num_t) n1, (gpio_drive_cap_t *) a0); NIP) \
+  Y(esp_intr_alloc, n0 = EspIntrAlloc(n4, n3, n2, n1, a0); NIPn(4)) \
+  Y(esp_intr_free, n0 = esp_intr_free((intr_handle_t) n0)) \
+  Y(timer_isr_register, n0 = TimerIsrRegister(n5, n4, n3, n2, n1, a0); NIPn(5))
 #endif
 
 #ifndef ENABLE_CAMERA_SUPPORT
@@ -456,6 +507,65 @@ static cell_t FromIP(IPAddress ip) {
   X("WebServer.handleClient", WEBSERVER_HANDLE_CLIENT, ws0->handleClient(); DROP)
 #endif
 
+// ****** TIME OF FLIGHT  VL53L0X LASER DISTANCE SENSOR ******** 
+#define ENABLE_TOF_LASER
+
+#ifndef ENABLE_TOF_LASER
+# define OPTIONAL_TOF_LASER_SUPPORT
+#else
+// static VL53L0X.h  pololu library
+# define OPTIONAL_TOF_LASER_SUPPORT \
+#include <Wire.h>
+#include <VL53L0X.h>
+VL53L0X sensor;
+void setuplaser()
+{
+ // Serial.begin(9600);
+  Wire.begin();
+  sensor.setTimeout(500);
+  if (!sensor.init())
+  {
+    Serial.println("**Failed to detect and initialize **TOF** sensor!");
+  }
+     sensor.setMeasurementTimingBudget(200000);  // high speed
+}
+
+int readlaser(void)
+{
+  // int resultmm;
+  int o = sensor.readRangeSingleMillimeters();
+      if (sensor.timeoutOccurred()) { Serial.print(" TIMEOUT"); }
+  return o;    //  resultmm;   //  Serial.println();
+}
+ 
+#endif
+
+// ****** COMPASS HMC 5883L  MAGNETOMETER ********** 
+
+#define  ENABLE_COMPASS
+#ifndef  ENABLE_COMPASS
+# define OPTIONAL_COMPASS_SUPPORT
+#else
+# define OPTIONAL_COMPASS_SUPPORT \
+#include <Wire.h> 
+#include <MechaQMC5883.h>
+  MechaQMC5883 qmc;
+void setupcomp(void) {
+  Wire.begin();
+ // Serial.begin(9600);
+  qmc.init();
+  //qmc.setMode(Mode_Continuous,ODR_200Hz,RNG_2G,OSR_256);
+}
+  
+int readcomp(void) 
+{
+ /* Display the results (magnetic vector values are in micro-Tesla (uT)) */
+ int x,y,z;
+  qmc.read(&x,&y,&z);
+   return x;
+}
+#endif
+ 
 #ifndef ENABLE_OLED_SUPPORT
 # define OPTIONAL_OLED_SUPPORT
 #else
@@ -490,6 +600,10 @@ static Adafruit_SSD1306 *oled_display = 0;
 
 static char filename[PATH_MAX];
 static String string_value;
+
+static cell_t EspIntrAlloc(cell_t source, cell_t flags, cell_t xt, cell_t arg, cell_t *ret);
+static cell_t GpioIsrHandlerAdd(cell_t pin, cell_t xt, cell_t arg);
+static cell_t TimerIsrRegister(cell_t group, cell_t timer, cell_t xt, cell_t arg, void *ret);
 
 #define PRINT_ERRORS 0
 
@@ -688,8 +802,6 @@ const char boot[] =
 ": (   41 parse drop drop ; immediate\n"
 "\n"
 "( Useful Basic Compound Words )\n"
-": 2drop ( n n -- ) drop drop ;\n"
-": 2dup ( a b -- a b a b ) over over ;\n"
 ": nip ( a b -- b ) swap drop ;\n"
 ": rdrop ( r: n n -- ) r> r> drop >r ;\n"
 ": */ ( n n n -- n ) */mod nip ;\n"
@@ -722,6 +834,12 @@ const char boot[] =
 ": cell+ ( n -- n ) cell + ;\n"
 ": cells ( n -- n ) cell * ;\n"
 ": cell/ ( n -- n ) cell / ;\n"
+"\n"
+"( Double Words )\n"
+": 2drop ( n n -- ) drop drop ;\n"
+": 2dup ( a b -- a b a b ) over over ;\n"
+": 2@ ( a -- lo hi ) dup @ swap cell+ @ ;\n"
+": 2! ( lo hi a -- ) dup >r cell+ ! r> ! ;\n"
 "\n"
 "( System Variables )\n"
 ": 'tib ( -- a ) 'sys 0 cells + ;\n"
@@ -823,7 +941,10 @@ const char boot[] =
 "\n"
 "( Values )\n"
 ": value ( n -- ) create , does> @ ;\n"
-": to ( n -- ) ' >body state @ if aliteral postpone ! else ! then ; immediate\n"
+": to ( n -- )\n"
+"   ' >body state @ if aliteral postpone ! else ! then ; immediate\n"
+": +to ( n -- )\n"
+"   ' >body state @ if aliteral postpone +! else +! then ; immediate\n"
 "\n"
 "( Deferred Words )\n"
 ": defer ( \"name\" -- ) create 0 , does> @ dup 0= throw execute ;\n"
@@ -977,17 +1098,64 @@ const char boot[] =
 "xt-hide\n"
 "forth definitions\n"
 ")\n"
+"( Cooperative Tasks )\n"
+"\n"
+"vocabulary tasks   tasks definitions\n"
+"\n"
+"variable task-list\n"
+"\n"
+"forth definitions tasks also internals\n"
+"\n"
+": pause\n"
+"  rp@ sp@ task-list @ cell+ !\n"
+"  task-list @ @ task-list !\n"
+"  task-list @ cell+ @ sp! rp!\n"
+";\n"
+"\n"
+": task ( xt dsz rsz \"name\" )\n"
+"   create here >r 0 , 0 , ( link, sp )\n"
+"   swap here cell+ r@ cell+ ! cells allot\n"
+"   here r@ cell+ @ ! cells allot\n"
+"   dup 0= if drop else\n"
+"     here r@ cell+ @ @ ! ( set rp to point here )\n"
+"     , postpone pause ['] branch , here 3 cells - ,\n"
+"   then rdrop ;\n"
+"\n"
+": start-task ( t -- )\n"
+"   task-list @ if\n"
+"     task-list @ @ over !\n"
+"     task-list @ !\n"
+"   else\n"
+"     dup task-list !\n"
+"     dup !\n"
+"   then\n"
+";\n"
+"\n"
+"DEFINED? ms-ticks [IF]\n"
+"  : ms ( n -- ) ms-ticks >r begin pause ms-ticks r@ - over >= until rdrop drop ;\n"
+"[THEN]\n"
+"\n"
+"tasks definitions\n"
+"0 0 0 task main-task   main-task start-task\n"
+"forth definitions\n"
+"( Add a yielding task so pause yields )\n"
+"internals definitions\n"
+"transfer{ yield raw-yield }transfer\n"
+"' raw-yield 100 100 task yield-task\n"
+"yield-task start-task\n"
+"forth definitions\n"
+"\n"
 "( Set up Basic I/O )\n"
 "internals definitions\n"
-": arduino-bye   0 terminate ;\n"
-"' arduino-bye is bye\n"
-": arduino-type ( a n -- ) Serial.write drop ;\n"
-"' arduino-type is type\n"
-": arduino-key ( -- n )\n"
-"   begin Serial.available until 0 >r rp@ 1 Serial.readBytes drop r> ;\n"
-"' arduino-key is key\n"
-": arduino-key? ( -- n ) Serial.available ;\n"
-"' arduino-key? is key?\n"
+": esp32-bye   0 terminate ;\n"
+"' esp32-bye is bye\n"
+": serial-type ( a n -- ) Serial.write drop ;\n"
+"' serial-type is type\n"
+": serial-key ( -- n )\n"
+"   begin pause Serial.available until 0 >r rp@ 1 Serial.readBytes drop r> ;\n"
+"' serial-key is key\n"
+": serial-key? ( -- n ) Serial.available ;\n"
+"' serial-key? is key?\n"
 "forth definitions\n"
 "\n"
 "( Map Arduino / ESP32 things to shorter names. )\n"
@@ -999,6 +1167,7 @@ const char boot[] =
 "\n"
 "( Utilities )\n"
 ": page   30 for cr next ;\n"
+": cls   30 for cr next ;\n"
 "\n"
 "( Basic Ardiuno Constants )\n"
 "0 constant LOW\n"
@@ -1016,7 +1185,7 @@ const char boot[] =
 "high led pin\n"
 "\n"
 "( Setup entry )\n"
-": ok   .\" ESP32forth v7.0.3 - rev 13680a6ca015f2737e80be8aad53917a6a8e9f7d\" cr prompt refill drop quit ;\n"
+": ok   .\" ESP32forth v7.0.5 - rev 33cf8aaa6fe3e0bc4abf3e4cd5c496a3071b9171\" cr prompt refill drop quit ;\n"
 "( Words with OS assist )\n"
 ": allocate ( n -- a ior ) malloc dup 0= ;\n"
 ": free ( a -- ior ) sysfree drop 0 ;\n"
@@ -1110,6 +1279,53 @@ const char boot[] =
 "16 constant sizeof(sockaddr_in)\n"
 "forth definitions\n"
 "\n"
+"vocabulary interrupts   interrupts definitions\n"
+"transfer{\n"
+"  gpio_config\n"
+"  gpio_reset_pin gpio_set_intr_type\n"
+"  gpio_intr_enable gpio_intr_disable\n"
+"  gpio_set_level gpio_get_level\n"
+"  gpio_set_direction\n"
+"  gpio_set_pull_mode\n"
+"  gpio_wakeup_enable gpio_wakeup_disable\n"
+"  gpio_pullup_en gpio_pullup_dis\n"
+"  gpio_pulldown_en gpio_pulldown_dis\n"
+"  gpio_hold_en gpio_hold_dis\n"
+"  gpio_deep_sleep_hold_en gpio_deep_sleep_hold_dis\n"
+"  gpio_install_isr_service gpio_uninstall_isr_service\n"
+"  gpio_isr_handler_add gpio_isr_handler_remove\n"
+"  gpio_set_drive_capability gpio_get_drive_capability\n"
+"  esp_intr_alloc esp_intr_free\n"
+"}transfer\n"
+"\n"
+"0 constant ESP_INTR_FLAG_DEFAULT\n"
+": ESP_INTR_FLAG_LEVELn ( n=1-6 -- n ) 1 swap lshift ;\n"
+"1 7 lshift constant ESP_INTR_FLAG_NMI\n"
+"1 8 lshift constant ESP_INTR_FLAG_SHARED\n"
+"1 9 lshift constant ESP_INTR_FLAG_EDGE\n"
+"1 10 lshift constant ESP_INTR_FLAG_IRAM\n"
+"1 11 lshift constant ESP_INTR_FLAG_INTRDISABLED\n"
+"\n"
+"0 constant GPIO_INTR_DISABLE\n"
+"1 constant GPIO_INTR_POSEDGE\n"
+"2 constant GPIO_INTR_NEGEDGE\n"
+"3 constant GPIO_INTR_ANYEDGE\n"
+"4 constant GPIO_INTR_LOW_LEVEL\n"
+"5 constant GPIO_INTR_HIGH_LEVEL\n"
+"\n"
+"( Easy word to trigger on any change to a pin )\n"
+"ESP_INTR_FLAG_DEFAULT gpio_install_isr_service drop\n"
+": pinchange ( xt pin ) dup GPIO_INTR_ANYEDGE gpio_set_intr_type throw\n"
+"                       swap 0 gpio_isr_handler_add throw ;\n"
+"\n"
+"forth definitions\n"
+"\n"
+"vocabulary rtos   rtos definitions\n"
+"transfer{\n"
+"  xPortGetCoreID xTaskCreatePinnedToCore vTaskDelete\n"
+"}transfer\n"
+"forth definitions\n"
+"\n"
 "DEFINED? SerialBT.new [IF]\n"
 "vocabulary bluetooth   bluetooth definitions\n"
 "transfer{\n"
@@ -1151,9 +1367,15 @@ const char boot[] =
 "  2 OledTextsize  ( Draw 2x Scale Text )\n"
 "  WHITE OledTextc  ( Draw white text )\n"
 "  0 0 OledSetCursor  ( Start at top-left corner )\n"
-"  z\" *Esp32forth*\" OledPrintln OledDisplay\n"
+"  z\" Esp32forth\" OledPrintln OledDisplay\n"
 ";\n"
+" : oo oleddisplay ;\n"
 "forth definitions\n"
+"[THEN]\n"
+"\n"
+"DEFINED? initlaser [IF]\n"
+": initlaser1  initlaser cr .\" init laser \" cr ;\n"
+// "initlaser1\n"
 "[THEN]\n"
 "\n"
 "internals definitions\n"
@@ -1176,6 +1398,12 @@ const char boot[] =
 "010000000000000 constant MALLOC_CAP_RETENTION\n"
 "decimal\n"
 "forth definitions\n"
+" : noop ; \n"
+" defer user1  defer user2 defer user3 defer user4 \n"
+" defer user5  defer user6 defer user7 defer user8 \n"
+" ' noop is user1 ' noop is user2 ' noop is user3 \n"
+" ' noop is user4 ' noop is user5 ' noop is user6 \n"
+" ' noop is user7 ' noop is user8 \n"
 "\n"
 "( Including Files )\n"
 ": included ( a n -- )\n"
@@ -1292,6 +1520,11 @@ const char boot[] =
 ": vlist   0 context @ @ begin dup >name-length while onlines dup see. >link repeat 2drop cr ;\n"
 ": words   0 context @ @ begin dup while onlines dup see. >link repeat 2drop cr ;\n"
 "only forth definitions\n"
+"\n"
+"( Extra Task Utils )\n"
+"tasks definitions also internals\n"
+": .tasks   task-list @ begin dup 2 cells - see. @ dup task-list @ = until drop ;\n"
+"only forth definitions\n"
 "( Local Variables )\n"
 "\n"
 "( NOTE: These are not yet gforth compatible )\n"
@@ -1321,46 +1554,6 @@ const char boot[] =
 ": ;   scope-clear postpone ; ; immediate\n"
 "\n"
 "only forth definitions\n"
-"( Cooperative Tasks )\n"
-"\n"
-"vocabulary tasks   tasks definitions\n"
-"\n"
-"variable task-list\n"
-"\n"
-"forth definitions tasks also internals\n"
-"\n"
-": pause\n"
-"  rp@ sp@ task-list @ cell+ !\n"
-"  task-list @ @ task-list !\n"
-"  task-list @ cell+ @ sp! rp!\n"
-";\n"
-"\n"
-": task ( xt dsz rsz \"name\" )\n"
-"   create here >r 0 , 0 , ( link, sp )\n"
-"   swap here cell+ r@ cell+ ! cells allot\n"
-"   here r@ cell+ @ ! cells allot\n"
-"   dup 0= if drop else\n"
-"     here r@ cell+ @ @ ! ( set rp to point here )\n"
-"     , postpone pause ['] branch , here 3 cells - ,\n"
-"   then rdrop ;\n"
-"\n"
-": start-task ( t -- )\n"
-"   task-list @ if\n"
-"     task-list @ @ over !\n"
-"     task-list @ !\n"
-"   else\n"
-"     dup task-list !\n"
-"     dup !\n"
-"   then\n"
-";\n"
-"\n"
-"DEFINED? ms-ticks [IF]\n"
-"  : ms ( n -- ) ms-ticks >r begin pause ms-ticks r@ - over >= until rdrop drop ;\n"
-"[THEN]\n"
-"\n"
-"tasks definitions\n"
-"0 0 0 task main-task   main-task start-task\n"
-"forth definitions\n"
 "( Byte Stream / Ring Buffer )\n"
 "\n"
 "vocabulary streams   streams definitions\n"
@@ -1403,8 +1596,10 @@ const char boot[] =
 "<style>\n"
 "body {\n"
 "  padding: 5px;\n"
-"  background-color: #111;\n"
+"  background-color: #0000cc;\n" 
+// "  background-color: #111;\n" #0000cc
 "  color: #2cf;\n"
+"  overflow: hidden;\n"
 "}\n"
 "#prompt {\n"
 "  width: 100%;\n"
@@ -1416,18 +1611,30 @@ const char boot[] =
 "  width: 100%;\n"
 "  height: 80%;\n"
 "  resize: none;\n"
+"  overflow-y: scroll;\n"
+"  word-break: break-all;\n"
 "}\n"
 "</style>\n"
-"</head>\n"
-"<h2>ESP32forth v7</h2>\n"
 "<link rel=\"icon\" href=\"data:,\">\n"
+"</head>\n"
 "<body>\n"
+"<h2>ESP32forth v7</h2>\n"
 "Upload File: <input id=\"filepick\" type=\"file\" name=\"files[]\"></input><br/>\n"
 "<button onclick=\"ask('hex')\">hex</button>\n"
 "<button onclick=\"ask('decimal')\">decimal</button>\n"
 "<button onclick=\"ask('words')\">words</button>\n"
 "<button onclick=\"ask('low led pin')\">LED OFF</button>\n"
 "<button onclick=\"ask('high led pin')\">LED ON</button>\n"
+"<font face='Arial' size='20px' color='#FF7A59'>\n"
+"<button onclick=\"ask('user1')\">SLOW</button>\n"
+"<button onclick=\"ask('user2')\">FAST</button>\n"
+"<button onclick=\"ask('user3')\">FORW</button>\n"
+"<button onclick=\"ask('user4')\">BACKW</button>\n"
+"<button onclick=\"ask('user5')\">LEFT</button>\n"
+"<button onclick=\"ask('user6')\">RIGHT</button>\n"
+// "<button style= background-color:red;border-color:blue;color:white>\n" 
+"<button onclick=\"ask('user7')\">RUN</button>\n"
+"<button onclick=\"ask('user8')\">STOP</button>\n"
 "<br/>\n"
 "<textarea id=\"output\" readonly></textarea>\n"
 "<input id=\"prompt\" type=\"prompt\"></input><br/>\n"
@@ -1472,7 +1679,7 @@ const char boot[] =
 "  if (event.target.files.length > 0) {\n"
 "    var reader = new FileReader();\n"
 "    reader.onload = function(e) {\n"
-"      var parts = e.target.result.split('\\n');\n"
+"      var parts = e.target.result.replace(/[\\r]/g, '').split('\\n');\n"
 "      function upload() {\n"
 "        if (parts.length === 0) { filepick.value = ''; return; }\n"
 "        ask(parts.shift(), upload);\n"
@@ -1520,8 +1727,7 @@ const char boot[] =
 "   webserver @ WebServer.begin\n"
 "   begin\n"
 "     webserver @ WebServer.handleClient\n"
-"     1 ms\n"
-"     yield\n"
+"     pause\n"
 "   again\n"
 ";\n"
 "\n"
@@ -1542,6 +1748,75 @@ const char boot[] =
 ": webui ( z z -- ) login serve ;\n"
 "\n"
 "only forth definitions\n"
+"vocabulary registers   registers definitions\n"
+"\n"
+"( Tools for working with bit masks )\n"
+": m! ( val shift mask a -- )\n"
+"   dup >r @ over invert and >r >r lshift r> and r> or r> ! ;\n"
+": m@ ( shift mask a -- val ) @ and swap rshift ;\n"
+"\n"
+"only forth definitions\n"
+"vocabulary timers   timers definitions   also registers also interrupts\n"
+"\n"
+"$3ff5f000 constant TIMG_BASE\n"
+"( group n = 0/1, timer x = 0/1, watchdog m = 0-5 )\n"
+": TIMGn ( n -- a ) $10000 * TIMG_BASE + ;\n"
+": TIMGn_Tx ( n x -- a ) $24 * swap TIMGn + ;\n"
+": TIMGn_TxCONFIG_REG ( n x -- a ) TIMGn_Tx 0 cells + ;\n"
+": TIMGn_TxLOHI_REG ( n x -- a ) TIMGn_Tx 1 cells + ;\n"
+": TIMGn_TxUPDATE_REG ( n x -- a ) TIMGn_Tx 3 cells + ;\n"
+": TIMGn_TxALARMLOHI_REG ( n x -- a ) TIMGn_Tx 4 cells + ;\n"
+": TIMGn_TxLOADLOHI_REG ( n x -- a ) TIMGn_Tx 6 cells + ;\n"
+": TIMGn_TxLOAD_REG ( n x -- a ) TIMGn_Tx 8 cells + ;\n"
+"\n"
+": TIMGn_Tx_WDTCONFIGm_REG ( n m -- a ) swap TIMGn cells + $48 + ;\n"
+": TIMGn_Tx_WDTFEED_REG ( n -- a ) TIMGn $60 + ;\n"
+": TIMGn_Tx_WDTWPROTECT_REG ( n -- a ) TIMGn $6c + ;\n"
+"\n"
+": TIMGn_RTCCALICFG_REG ( n -- a ) TIMGn $68 + ;\n"
+": TIMGn_RTCCALICFG1_REG ( n -- a ) TIMGn $6c + ;\n"
+"\n"
+": TIMGn_Tx_INT_ENA_REG ( n -- a ) TIMGn $98 + ;\n"
+": TIMGn_Tx_INT_RAW_REG ( n -- a ) TIMGn $9c + ;\n"
+": TIMGn_Tx_INT_ST_REG ( n -- a ) TIMGn $a0 + ;\n"
+": TIMGn_Tx_INT_CLR_REG ( n -- a ) TIMGn $a4 + ;\n"
+"\n"
+": t>nx ( t -- n x ) dup 2/ 1 and swap 1 and ;\n"
+"\n"
+": timer@ ( t -- lo hi )\n"
+"   dup t>nx TIMGn_TxUPDATE_REG 0 swap !\n"
+"       t>nx TIMGn_TxLOHI_REG 2@ ;\n"
+": timer! ( lo hi t -- )\n"
+"   dup >r t>nx TIMGn_TxLOADLOHI_REG 2!\n"
+"       r> t>nx TIMGn_TxLOAD_REG 0 swap ! ;\n"
+": alarm ( t -- a ) t>nx TIMGn_TxALARMLOHI_REG ;\n"
+"\n"
+": enable! ( v t ) >r 31 $80000000 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": increase! ( v t ) >r 30 $40000000 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": autoreload! ( v t ) >r 29 $20000000 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": divider! ( v t ) >r 13 $1fffc000 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": edgeint! ( v t ) >r 12 $1000 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": levelint! ( v t ) >r 11 $800 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": alarm-enable! ( v t ) >r 10 $400 r> t>nx TIMGn_TxCONFIG_REG m! ;\n"
+": alarm-enable@ ( v t ) >r 10 $400 r> t>nx TIMGn_TxCONFIG_REG m@ ;\n"
+"\n"
+": int-enable! ( f t -- )\n"
+"   t>nx swap >r dup 1 swap lshift r> TIMGn_Tx_INT_ENA_REG m! ;\n"
+"\n"
+": onalarm ( xt t ) swap >r t>nx r> 0 ESP_INTR_FLAG_EDGE 0\n"
+"                   timer_isr_register throw ;\n"
+": interval ( xt usec t ) 80 over divider!\n"
+"                         swap over 0 swap alarm 2!\n"
+"                         1 over increase!\n"
+"                         1 over autoreload!\n"
+"                         1 over alarm-enable!\n"
+"                         1 over edgeint!\n"
+"                         0 over 0 swap timer!\n"
+"                         dup >r onalarm r>\n"
+"                         1 swap enable! ;\n"
+": rerun ( t -- ) 1 swap alarm-enable! ;\n"
+"\n"
+"only forth definitions\n"
 "( Lazy loaded Bluetooth Serial Terminal )\n"
 "\n"
 ": bterm r|\n"
@@ -1554,14 +1829,14 @@ const char boot[] =
 ": bt-key\n"
 "   begin bt SerialBT.available until 0 >r rp@ 1 bt SerialBT.readBytes drop r> ;\n"
 ": bt-on ['] bt-type is type ['] bt-key is key ;\n"
-": bt-off ['] arduino-type is type ['] arduino-key is key ;\n"
+": bt-off ['] serial-type is type ['] serial-key is key ;\n"
 "only forth definitions\n"
 "bterm 500 ms bt-on\n"
 "| evaluate ;\n"
 "( Telnet )\n"
 "vocabulary telnetd   telnetd definitions also sockets also internals\n"
 "\n"
-"8080 constant port\n"
+"23 constant port\n"
 "-1 value sockfd   -1 value clientfd\n"
 ": bs, ( n -- ) dup 256 / c, c, ;\n"
 ": s, ( n -- ) dup c, 256 / c, ;\n"
@@ -1585,8 +1860,8 @@ const char boot[] =
 ": broker-connection\n"
 "  rp0 rp! sp0 sp!\n"
 "  begin\n"
-"    ['] arduino-key is key\n"
-"    ['] arduino-type is type\n"
+"    ['] serial-key is key\n"
+"    ['] serial-type is type\n"
 "    -1 echo !\n"
 "    .\" Listening on port \" port . cr\n"
 "    sockfd client client-len accept\n"
@@ -1772,8 +2047,8 @@ static void InvokeWebServerOn(WebServer *ws, const char *url, cell_t xt) {
     cell_t code[2];
     code[0] = xt;
     code[1] = g_sys.YIELD_XT;
-    cell_t stack[16];
-    cell_t rstack[16];
+    cell_t stack[INTERRUPT_STACK_CELLS];
+    cell_t rstack[INTERRUPT_STACK_CELLS];
     cell_t *rp = rstack;
     *++rp = (cell_t) (stack + 1);
     *++rp = (cell_t) code;
@@ -1781,6 +2056,49 @@ static void InvokeWebServerOn(WebServer *ws, const char *url, cell_t xt) {
   });
 }
 #endif
+
+struct handle_interrupt_args {
+  cell_t xt;
+  cell_t arg;
+};
+
+static void IRAM_ATTR HandleInterrupt(void *arg) {
+  struct handle_interrupt_args *args = (struct handle_interrupt_args *) arg;
+  cell_t code[2];
+  code[0] = args->xt;
+  code[1] = g_sys.YIELD_XT;
+  cell_t stack[INTERRUPT_STACK_CELLS];
+  cell_t rstack[INTERRUPT_STACK_CELLS];
+  stack[0] = args->arg;
+  cell_t *rp = rstack;
+  *++rp = (cell_t) (stack + 1);
+  *++rp = (cell_t) code;
+  forth_run(rp);
+}
+
+static cell_t EspIntrAlloc(cell_t source, cell_t flags, cell_t xt, cell_t arg, void *ret) {
+  // NOTE: Leaks memory.
+  struct handle_interrupt_args *args = (struct handle_interrupt_args *) malloc(sizeof(struct handle_interrupt_args));
+  args->xt = xt;
+  args->arg = arg;
+  return esp_intr_alloc(source, flags, HandleInterrupt, args, (intr_handle_t *) ret);
+}
+
+static cell_t GpioIsrHandlerAdd(cell_t pin, cell_t xt, cell_t arg) {
+  // NOTE: Leaks memory.
+  struct handle_interrupt_args *args = (struct handle_interrupt_args *) malloc(sizeof(struct handle_interrupt_args));
+  args->xt = xt;
+  args->arg = arg;
+  return gpio_isr_handler_add((gpio_num_t) pin, HandleInterrupt, args);
+}
+
+static cell_t TimerIsrRegister(cell_t group, cell_t timer, cell_t xt, cell_t arg, cell_t flags, void *ret) {
+  // NOTE: Leaks memory.
+  struct handle_interrupt_args *args = (struct handle_interrupt_args *) malloc(sizeof(struct handle_interrupt_args));
+  args->xt = xt;
+  args->arg = arg;
+  return timer_isr_register((timer_group_t) group, (timer_idx_t) timer, HandleInterrupt, args, flags, (timer_isr_handle_t *) ret);
+}
 
 void setup() {
   cell_t *heap = (cell_t *) malloc(HEAP_SIZE);
