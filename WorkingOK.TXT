@@ -1,0 +1,46 @@
+( GPS still on development , works ok ) 
+
+when Forthmobilev3.5 starts it opens a serial port2 to 9600 baud 
+the GPS NEO 6 shall be connected RTX2 and TX2 pins
+
+( rr and vv are abreviations )  
+
+I execute by hand RR and again and again, 
+till I see on the screen the message 
+." IS A VALID COMMAND"
+( in the future  RR should run inside a LOOP and 
+after reading the Checksum  ,  values are sepparated
+from the main string in BUFF1  with "VV" , all automatically) 
+
+For now :
+." IS A VALID COMMAND"  means 
+on the Serial2 continuous stream of data sent by the GPS
+we have  detected $GPGGA,  which means follows a valid lat&long position command
+
+all commands sent by the GPS have  data with integer part and decimal part, 
+so I did 3 values for each position number  + 1 value more for a Char N  S  W  O 
+ longitude = GPSlong1 GPSlong2 GPSlong3
+ latitude  = GPSlat1  GPSlat2  GPSlat3
+
+ GPSlong3 is W or O  and GPSlat3 = N or S  (both as char value)
+
+ GPSTIME is a full integer 32bit without the decimal part, I drop those 2 decimals.
+
+So after RR shows me ." Is a valid command"   I execute  VV  ( View View)
+ 
+to "view" and store the data inside the 7 values.
+ 
+VV  reads the BUFF1 with the raw  command string and sepparates 
+values up to "," and up to "." , then calls " convertgps "
+ 
+if you want to print  the conversion result do   " print-gps$ "
+ 
+if you have connected an OLED do  " latoled "
+it will print position lat long and  N S W O on the Oled
+
+I tested simoultaneous TOF laser value and Compass values,  all 3 sensors
+work well together, and I can print all values together on the OLED.
+So I tested 4 devices on the same I2C bus, without any problem.
+
+(I tested also the Gyroscope together on I2c Bus and it did work well,without
+conflicts  but I did not do  the words from Forth to read it)
