@@ -39,23 +39,20 @@ Forth ledc
 init
 
 : >pwmLeft ( speed -- )
-	." >PWMleft: " dup . 
 	dup dup 0 > 255 < and IF
 		LEFT swap ledcWrite
 	THEN
 	;
 	
 : >pwmright ( speed -- )
-	." >PWMright: " dup . 
 	dup dup 0 > 255 < and IF
 		RIGHT swap ledcWrite
 	THEN
 	;
 	
 : >pwmBoth ( speed -- )
-	." setting PWM to " cr
-	." left: " dup . LEFT swap ledcWrite
-	." right " dup . RIGHT swap ledcWrite
+	dup . LEFT swap ledcWrite
+	dup . RIGHT swap ledcWrite
 	;
 
 
@@ -68,26 +65,20 @@ init
 ;
 
 : >left_gear ( forward | backward -- )
-	." Setting pins left side " 
 	forward = if 
-		." to forward " cr
 		HIGH PIN_IN1 pin
 		LOW PIN_IN2 pin
 	else
-		." to backward " cr
 		LOW PIN_IN1 pin
 		HIGH PIN_IN2 pin
 	then
 	;
 
 : >right_gear  ( forward | backward -- )
-	." Setting pins right side " 
 	forward = if
-		." to forward " cr
 		HIGH PIN_IN3 pin
 		LOW PIN_IN4 pin
 	else
-		." to backward " cr
 		LOW PIN_IN3 pin
 		HIGH PIN_IN4 pin
 	then
