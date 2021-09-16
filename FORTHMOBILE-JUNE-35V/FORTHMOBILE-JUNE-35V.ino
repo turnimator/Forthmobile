@@ -3,6 +3,13 @@
  * Revision: 33cf8aaa6fe3e0bc4abf3e4cd5c496a3071b9171
  */
 
+ 
+// ****** COMPASS HMC 5883L  MAGNETOMETER ********** 
+//#define  ENABLE_COMPASS_SUPPORT
+
+// ****** TIME OF FLIGHT  VL53L0X LASER DISTANCE SENSOR ******** 
+//#define ENABLE_TOF_LASER_SUPPORT
+
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -181,10 +188,6 @@ typedef int64_t dcell_t;
 
 #define PLATFORM_OPCODE_LIST \
   /* Memory Allocation */ \
-  X("initcompass",setupcomp2, setupcomp()) \
-  X("readcompass",readcomp2, PUSH readcomp())  \
-  X("initlaser", setupe, setuplaser()) \
-  X("readlaser",sotape, PUSH readlaser())  \
   Y(MALLOC, SET malloc(n0))  \
   Y(SYSFREE, free(a0); DROP) \
   Y(REALLOC, SET realloc(a1, n0); NIP) \
@@ -507,14 +510,14 @@ static cell_t FromIP(IPAddress ip) {
   X("WebServer.handleClient", WEBSERVER_HANDLE_CLIENT, ws0->handleClient(); DROP)
 #endif
 
-// ****** TIME OF FLIGHT  VL53L0X LASER DISTANCE SENSOR ******** 
-#define ENABLE_TOF_LASER
-
-#ifndef ENABLE_TOF_LASER
+#ifndef ENABLE_TOF_LASER_SUPPORT
 # define OPTIONAL_TOF_LASER_SUPPORT
 #else
 // static VL53L0X.h  pololu library
 # define OPTIONAL_TOF_LASER_SUPPORT \
+X("initlaser", setupe, setuplaser()) \
+  X("readlaser",sotape, PUSH readlaser())  
+  
 #include <Wire.h>
 #include <VL53L0X.h>
 VL53L0X sensor;
@@ -540,13 +543,13 @@ int readlaser(void)
  
 #endif
 
-// ****** COMPASS HMC 5883L  MAGNETOMETER ********** 
-
-#define  ENABLE_COMPASS
-#ifndef  ENABLE_COMPASS
+#ifndef  ENABLE_COMPASS_SUPPORT
 # define OPTIONAL_COMPASS_SUPPORT
 #else
 # define OPTIONAL_COMPASS_SUPPORT \
+  X("initcompass",setupcomp2, setupcomp()) \
+  X("readcompass",readcomp2, PUSH readcomp())
+
 #include <Wire.h> 
 #include <MechaQMC5883.h>
   MechaQMC5883 qmc;
