@@ -5,10 +5,10 @@
 
  
 // ****** COMPASS HMC 5883L  MAGNETOMETER ********** 
-//#define  ENABLE_COMPASS_SUPPORT
+#define  ENABLE_OPTIONAL_COMPASS_SUPPORT
 
 // ****** TIME OF FLIGHT  VL53L0X LASER DISTANCE SENSOR ******** 
-//#define ENABLE_TOF_LASER_SUPPORT
+#define ENABLE_OPTIONAL_TOF_LASER_SUPPORT
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -269,6 +269,86 @@ typedef int64_t dcell_t;
   OPTIONAL_FREERTOS_SUPPORT \
   OPTIONAL_INTERRUPTS_SUPPORT \
   OPTIONAL_OLED_SUPPORT \
+  OPTIONAL_TOF_LASER_SUPPORT\
+  OPTIONAL_COMPASS_SUPPORT \
+
+
+#ifdef ENABLE_OPTIONAL_TOF_LASER_SUPPORT
+#include <VL53L0X.h>
+#include <Wire.h>
+
+VL53L0X vl53l0x_1;
+VL53L0X vl53l0x_2;
+VL53L0X vl53l0x_3;
+
+#define VL53L0X_A1 0x33
+#define VL53L0X_A2 0x31
+#define VL53L0X_A3 0x32
+
+#define VL53L0X_XSHUT_1 13
+#define VL53L0X_XSHUT_2 (VL53L0X_XSHUT_1 + 1)
+#define VL53L0X_XSHUT_3 (VL53L0X_XSHUT_2 + 1)
+
+void initVL53L0X_XSHUT_1(){
+  digitalWrite(VL53L0X_XSHUT_1, HIGH);
+  delay(60);
+  vl53l0x_1.setAddress(VL53L0X_A1);
+  vl53l0x_1.init();
+  vl53l0x_1.setTimeout(500);
+  Serial.print("VL53L0X 1 at 0x");
+  Serial.println(vl53l0x_1.getAddress(), HEX);
+
+}
+
+void initVL53L0X_XSHUT_2(){
+  digitalWrite(VL53L0X_XSHUT_2, HIGH);
+  delay(60);
+  vl53l0x_2.setAddress(VL53L0X_A2);
+  vl53l0x_2.init();
+  vl53l0x_2.setTimeout(500);
+  Serial.print("VL53L0X 2 at 0x");
+  Serial.println(vl53l0x_2.getAddress(), HEX);
+}
+
+void initVL53L0X_XSHUT_3(){
+  digitalWrite(VL53L0X_XSHUT_3, HIGH);
+  delay(50);
+  vl53l0x_3.setAddress(VL53L0X_A3);
+  vl53l0x_3.init();
+  vl53l0x_3.setTimeout(500);
+  Serial.print("VL53L0X 3 at 0x");
+  Serial.println(vl53l0x_3.getAddress(), HEX);
+}
+// Inelegant, but working. Should be restructured into an array.
+
+void setupVL53L0X(){
+
+  delay(50);
+  Serial.println("VL53L0X SETUP (c)FSF Jan Atle Ramsli 2021 (GPL)");
+
+  Wire.begin();
+  pinMode(VL53L0X_XSHUT_1, OUTPUT);
+  pinMode(VL53L0X_XSHUT_2, OUTPUT);
+  pinMode(VL53L0X_XSHUT_3, OUTPUT);
+  digitalWrite(VL53L0X_XSHUT_1, LOW);
+  digitalWrite(VL53L0X_XSHUT_2, LOW);
+  digitalWrite(VL53L0X_XSHUT_3, LOW);
+  delay(100);
+
+  initVL53L0X_XSHUT_3();
+  initVL53L0X_XSHUT_1();
+  initVL53L0X_XSHUT_2();
+}
+
+
+#define OPTIONAL_TOF_LASER_SUPPORT \
+X("initlaser", setupe, setupVL53L0X()) \
+  X("readlaser1",readLaser1, PUSH vl53l0x_1.readRangeSingleMillimeters()) \
+  X("readlaser2",readLaser2, PUSH vl53l0x_2.readRangeSingleMillimeters()) \
+  X("readlaser3",readLaser3, PUSH vl53l0x_3.readRangeSingleMillimeters()) 
+#else
+#define OPTIONAL_TOF_LASER_SUPPORT
+#endif
 
 #ifndef ENABLE_SPIFFS_SUPPORT
 // Provide a default failing SPIFFS.begin
@@ -458,6 +538,7 @@ static cell_t FromIP(IPAddress ip) {
   X("WiFi.config", WIFI_CONFIG, \
       WiFi.config(ToIP(n3), ToIP(n2), ToIP(n1), ToIP(n0)); DROPn(4)) \
   X("WiFi.begin", WIFI_BEGIN, WiFi.begin(c1, c0); DROPn(2)) \
+  X("WiFi.softAP", WIFI_SOFTAP, WiFi.softAP(c1, c0); DROPn(2)) \
   X("WiFi.disconnect", WIFI_DISCONNECT, WiFi.disconnect()) \
   X("WiFi.status", WIFI_STATUS, PUSH WiFi.status()) \
   X("WiFi.macAddress", WIFI_MAC_ADDRESS, WiFi.macAddress(b0); DROP) \
@@ -510,52 +591,20 @@ static cell_t FromIP(IPAddress ip) {
   X("WebServer.handleClient", WEBSERVER_HANDLE_CLIENT, ws0->handleClient(); DROP)
 #endif
 
-#ifndef ENABLE_TOF_LASER_SUPPORT
-# define OPTIONAL_TOF_LASER_SUPPORT
-#else
-// static VL53L0X.h  pololu library
-# define OPTIONAL_TOF_LASER_SUPPORT \
-X("initlaser", setupe, setuplaser()) \
-  X("readlaser",sotape, PUSH readlaser())  
-  
-#include <Wire.h>
-#include <VL53L0X.h>
-VL53L0X sensor;
-void setuplaser()
-{
- // Serial.begin(9600);
-  Wire.begin();
-  sensor.setTimeout(500);
-  if (!sensor.init())
-  {
-    Serial.println("**Failed to detect and initialize **TOF** sensor!");
-  }
-     sensor.setMeasurementTimingBudget(200000);  // high speed
-}
-
-int readlaser(void)
-{
-  // int resultmm;
-  int o = sensor.readRangeSingleMillimeters();
-      if (sensor.timeoutOccurred()) { Serial.print(" TIMEOUT"); }
-  return o;    //  resultmm;   //  Serial.println();
-}
- 
-#endif
-
-#ifndef  ENABLE_COMPASS_SUPPORT
+#ifndef  ENABLE_OPTIONAL_COMPASS_SUPPORT
 # define OPTIONAL_COMPASS_SUPPORT
 #else
 # define OPTIONAL_COMPASS_SUPPORT \
-  X("initcompass",setupcomp2, setupcomp()) \
-  X("readcompass",readcomp2, PUSH readcomp())
+  X("initcompass",setupcomp, setupcomp()) \
+  X("readcompass",readcomp, PUSH readcomp())
 
 #include <Wire.h> 
-#include <MechaQMC5883.h>
-  MechaQMC5883 qmc;
+#include <QMC5883LCompass.h>
+  QMC5883LCompass qmc;
+  
 void setupcomp(void) {
   Wire.begin();
- // Serial.begin(9600);
+ 
   qmc.init();
   //qmc.setMode(Mode_Continuous,ODR_200Hz,RNG_2G,OSR_256);
 }
@@ -564,8 +613,8 @@ int readcomp(void)
 {
  /* Display the results (magnetic vector values are in micro-Tesla (uT)) */
  int x,y,z;
-  qmc.read(&x,&y,&z);
-   return x;
+  qmc.read();
+   return qmc.getX();
 }
 #endif
  
