@@ -1,46 +1,60 @@
 initlaser
 initcompass
 
-VARIABLE OBSTACLE_FRONT
-VARIABLE OBSTACLE_RIGHT
-VARIABLE OBSTACLE_LEFT
-VARIABLE course
-VARIABLE leftPWM
-VARIABLE rightPWM
+0 value course
 
-VARIABLE IS_BOXED_IN
+0 value LAST_OBSTACLE
 
-: LookforObstacles
-	0 IS_BOXED_IN !
-	0 500 servo 200 ms readlaser OBSTACLE_LEFT !
-	0 360 servo 200 ms readlaser OBSTACLE_FRONT !
-	0 200 servo 200 ms readlaser OBSTACLE_RIGHT !
-	0 360 servo 200 ms readlaser OBSTACLE_FRONT !
+0 value OBSTACLE_FRONT
+0 value OBSTACLE_RIGHT
+0 value OBSTACLE_LEFT
+
+0 value leftPWM
+0 value rightPWM
+
+0 value IS_BOXED_IN
+
+: plotRadar
+	cr
+		\ Estimate how far we traveled
+	OBSTACLE_FRONT LAST_OBSTACLE - ." @m " . cr
+	." @p 0 " OBSTACLE_FRONT . cr 
+	." @p -45 " OBSTACLE_LEFT . cr 
+	." @p 45 " OBSTACLE_RIGHT . cr 
+	." @h " COURSE . cr 
+	;
+	
+: ReadSensors
+	0 to IS_BOXED_IN
+	OBSTACLE_FRONT to LAST_OBSTACLE \ Save old
+	readlaser1 to OBSTACLE_FRONT
+	readlaser3 to OBSTACLE_LEFT 
+	readlaser2 to OBSTACLE_RIGHT
+\	readcompass to course
 	;
 
-
 : addToRightPWM ( value )
-	rightPWM @ swap - 
+	rightPWM swap - 
 	dup 1 < IF
-		0 rightPWM !
+		0 to rightPWM
 	ELSE
 		dup 254 > IF
-			255 rightPWM !
+			255 to rightPWM
 		ELSE
-			rightPWM !
+			to rightPWM
 		THEN
 	THEN
 	;
 
 : addToLeftPWM ( value )
-	leftPWM @ swap + 
+	leftPWM swap + 
 	dup 1 < IF
-		0 rightPWM !
+		0 to rightPWM
 	ELSE
 		dup 254 > IF
-			255 rightPWM !
+			255 to rightPWM
 		ELSE
-			rightPWM !
+			to rightPWM
 		THEN
 	THEN
 	;
@@ -51,72 +65,77 @@ VARIABLE IS_BOXED_IN
 	dup dup dup ." Veering: " . cr
 	addToRightPWM drop
 	addToLeftPWM drop
-	leftPWM @ >pwmLeft 
-	rightPWM @ >pwmRight
+	leftPWM >pwmLeft 
+	rightPWM >pwmRight
 	
 	;
 	
 : CorrectCourse (  )
-	readcompass course @ -
+	readcompass course -
 	dup ." Course error " . cr
 	Veer drop
 
 	;
 
  : .state
-	." FRONT " OBSTACLE_FRONT @ .
-	." LEFT " 	OBSTACLE_LEFT @ .
-	." RIGHT " 	OBSTACLE_RIGHT @ .	
+	." FRONT " OBSTACLE_FRONT .
+	." LEFT " 	OBSTACLE_LEFT .
+	." RIGHT " 	OBSTACLE_RIGHT .	
 	cr
-	." Course: " course @ . 
-	." leftPWM: " leftPWM @ .
-	." , rightPWM: " rightPWM @ .
+	." Course: " course . 
+	." leftPWM: " leftPWM .
+	." , rightPWM: " rightPWM .
 	
 	;
 
 : DecideAction
-	OBSTACLE_FRONT @ 200 < IF
+	OBSTACLE_FRONT 200 < IF
 		." Too close to obstacle, backing up." cr
 		150 150 backward drive 1000 ms motor_stop
+		EXIT
 	THEN
-	OBSTACLE_LEFT @ 200 < OBSTACLE_RIGHT @ 200 < and and IF
-		1 IS_BOXED_IN ! ." We're boxed in!" cr
+	OBSTACLE_LEFT 200 < OBSTACLE_RIGHT 200 < and and IF
+		1 to IS_BOXED_IN ." We're boxed in!" cr
 		motor_stop
+		EXIT
 	THEN
-	OBSTACLE_LEFT @ OBSTACLE_RIGHT @ < IF 
-	." Free sigt to the left."
-		course @ 100 - course !
-		120 120 forward drive
-	ELSE
-		." Free sigt to the right."
-		course @ 100 + course !
-		120 120 forward drive
+	OBSTACLE_LEFT 100 < IF
+		50 right turn 1000 ms
+		EXIT
 	THEN
-	
+		OBSTACLE_RIGHT 100 < IF
+		50 left turn 1000 ms
+		EXIT
+	THEN
+
+	OBSTACLE_LEFT 200 < IF
+		200 50 forward drive 1000 ms
+		EXIT
+	THEN
+		OBSTACLE_RIGHT 200 < IF
+		50 200 forward drive 1000 ms
+		EXIT
+	THEN
+
+	180 180 forward drive
 	;
 
 : mainloop 
-	200 leftPWM !
-	200 rightPWM !
+	readSensors
+	200 to leftPWM 
+	200 to rightPWM 
 	." Starting drive, setting course to "
-	leftPWM @ rightPWM @ forward drive
-	readcompass dup . course !
-	LookForObstacles
+	leftPWM rightPWM forward drive
 	BEGIN
+		plotRadar
+		readSensors
 		CorrectCourse
-		readlaser dup
-		600 < IF
-			." Obstacle less that 60cm ahead. Reducing speed." cr
-			50 50 >pwmBoth
-		THEN
-		300 < IF
-			motor_stop
-			LookForObstacles
-			DecideAction
-		THEN
-		IS_BOXED_IN @ 1 = 
+		DecideAction
+		IS_BOXED_IN 1 = 
 	UNTIL 
 	motor_stop
 	." End of drive."
 	;
+
+
 
